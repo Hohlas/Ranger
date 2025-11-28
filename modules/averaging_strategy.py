@@ -586,8 +586,8 @@ async def log_statistics_to_excel(client: SpotClient, operation: str, token_amou
             'USDC Balance': usdc_balance,
             'Token Balance': token_balance,
             'Limit Orders': limit_orders_value,
-            'Limit Orders List': limit_orders_list,
-            'Total Value': total_value
+            'Total Value': total_value,
+            'Limit Orders List': limit_orders_list
         }
         
         # Создаем каталог stat, если его нет
@@ -605,7 +605,7 @@ async def log_statistics_to_excel(client: SpotClient, operation: str, token_amou
             df = pd.DataFrame(columns=[
                 'Timestamp', 'Account', 'Current Price', 'Operation', 'Token Amount',
                 'Operation Price', 'USDC Balance', 'Token Balance', 'Limit Orders', 
-                'Limit Orders List', 'Total Value'
+                'Total Value', 'Limit Orders List'
             ])
         
         # Добавляем новую строку
