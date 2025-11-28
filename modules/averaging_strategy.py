@@ -234,6 +234,38 @@ async def create_tp_order(client: 'SpotClient', token_name: str, token_amount: D
         return None
 
 
+async def verify_order_exists_on_chain(client: 'SpotClient', order_id: str) -> bool:
+    """
+    Проверяет существование лимитного ордера на блокчейне через Solana RPC.
+    
+    Args:
+        client: SpotClient instance
+        order_id: limit_order_account_address (публичный ключ ордера)
+        
+    Returns:
+        bool: True если ордер существует на блокчейне, False если нет
+    """
+    try:
+        from solders.pubkey import Pubkey
+        
+        # Преобразуем order_id в Pubkey
+        order_pubkey = Pubkey.from_string(order_id)
+        
+        # Запрашиваем информацию об аккаунте
+        account_info = await client.sol_wallet.client.get_account_info(order_pubkey)
+        
+        # Если account_info.value не None, значит аккаунт существует
+        return account_info.value is not None
+        
+    except Exception as e:
+        client.log_message(
+            f"⚠️ Failed to verify order {order_id[:16]}... on-chain: {e}",
+            level="DEBUG"
+        )
+        # В случае ошибки считаем что ордер существует (безопаснее)
+        return True
+
+
 async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> list:
     """
     Получает список открытых TP ордеров с биржи (фильтрация по status == 0).
@@ -388,6 +420,47 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                     'entry_price': float(limit_price - settings.STEP),  # Оценка entry_price
                     'timestamp': timestamp
                 })
+        
+        # ✅ RPC-ПРОВЕРКА: Проверяем существование ордеров на блокчейне (только при старте)
+        if not hasattr(client, '_tp_orders_rpc_verified'):
+            client._tp_orders_rpc_verified = False
+        
+        if not client._tp_orders_rpc_verified and tp_orders:
+            client.log_message(
+                f"🔍 {client.sol_wallet.label}: Verifying {len(tp_orders)} orders on Solana blockchain...",
+                level="INFO"
+            )
+            
+            verified_orders = []
+            phantom_count = 0
+            
+            for order in tp_orders:
+                order_id = order['order_id']
+                exists = await verify_order_exists_on_chain(client, order_id)
+                
+                if exists:
+                    verified_orders.append(order)
+                else:
+                    phantom_count += 1
+                    client.log_message(
+                        f"   👻 Phantom order detected: {order_id[:16]}... @ ${order['tp_price']:.2f}",
+                        level="INFO"
+                    )
+            
+            tp_orders = verified_orders
+            
+            if phantom_count > 0:
+                client.log_message(
+                    f"   ⚠️ Filtered out {phantom_count} phantom orders. Real orders: {len(tp_orders)}",
+                    level="INFO"
+                )
+            else:
+                client.log_message(
+                    f"   ✅ All {len(tp_orders)} orders verified on blockchain!",
+                    level="INFO"
+                )
+            
+            client._tp_orders_rpc_verified = True
                 
         # Логируем только один раз при старте (с диагностикой)
         if not hasattr(client, '_tp_orders_logged'):
