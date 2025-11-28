@@ -264,6 +264,12 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
         output_mint_address = SOL_TOKEN_ADDRESSES.get("USDC")
         user_wallet = str(client.sol_wallet.address)
         
+        # Счётчики для диагностики
+        status_counts = {}
+        filtered_by_status = 0
+        filtered_by_tokens = 0
+        filtered_by_wallet = 0
+        
         # Фильтруем только наши ордера (token -> USDC от нашего кошелька)
         for order in exchange_orders:
             input_mint = order.get('input_mint')
@@ -273,16 +279,22 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
             # API может возвращать статус как int (0, 1, 2) или string
             order_status = order.get('status')
             
+            # Подсчитываем статусы для диагностики
+            status_key = f"status_{order_status}" if order_status is not None else "status_None"
+            status_counts[status_key] = status_counts.get(status_key, 0) + 1
+            
             if isinstance(order_status, int):
                 # Числовые статусы (из API):
                 # 0 = pending (активный)
                 # 1 = filled (исполнен)
                 # 2 = cancelled (отменен)
                 if order_status != 0:
+                    filtered_by_status += 1
                     continue  # Пропускаем всё кроме pending (0)
             elif isinstance(order_status, str):
                 # Строковые статусы
                 if order_status.lower() not in ['pending', 'open', 'active', '']:
+                    filtered_by_status += 1
                     continue  # Пропускаем cancelled, filled, expired
             # Если статус None или пустой - пропускаем через
             
@@ -295,9 +307,18 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
             )
             
             # Фильтрация: правильные токены И наш кошелек И активный статус
-            if (input_mint == input_mint_address and 
-                output_mint == output_mint_address and
-                (not order_owner or order_owner == user_wallet)):
+            tokens_match = (input_mint == input_mint_address and output_mint == output_mint_address)
+            wallet_match = (not order_owner or order_owner == user_wallet)
+            
+            if not tokens_match:
+                filtered_by_tokens += 1
+                continue
+            
+            if not wallet_match:
+                filtered_by_wallet += 1
+                continue
+            
+            if tokens_match and wallet_match:
                 # Извлекаем данные
                 order_id = order.get('limit_order_account_address') or order.get('order_id')
                 
@@ -346,6 +367,16 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
         if not client._tp_orders_logged:
             client.log_message(
                 f"🔍 {client.sol_wallet.label}: Received {len(exchange_orders)} orders from API (before filtering)",
+                level="INFO"
+            )
+            
+            # Диагностика фильтрации
+            client.log_message(
+                f"   📊 Status distribution: {', '.join([f'{k}={v}' for k, v in sorted(status_counts.items())])}",
+                level="INFO"
+            )
+            client.log_message(
+                f"   🔻 Filtered out: {filtered_by_status} by status, {filtered_by_tokens} by tokens, {filtered_by_wallet} by wallet",
                 level="INFO"
             )
             
