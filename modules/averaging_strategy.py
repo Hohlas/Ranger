@@ -78,64 +78,6 @@ async def send_combined_startup_message():
         _startup_message_sent = True
 
 
-async def get_last_buy_price(client: 'SpotClient', token_name: str) -> tuple:
-    """
-    Получает цену и объем последней покупки из истории сделок.
-    
-    Args:
-        client: SpotClient instance
-        token_name: Название токена (например "WBTC")
-        
-    Returns:
-        tuple: (price: float, amount: float, timestamp: str) или (None, None, None) если нет покупок
-    """
-    try:
-        # Получаем историю торговли
-        trades = await client.browser.get_trade_history(token_pair=f"{token_name}-USDC", limit=100)
-        
-        if not trades:
-            return None, None, None
-        
-        # Фильтруем только покупки (USDC → Token) с валидными данными
-        buys = []
-        for t in trades:
-            # Проверяем направление
-            if t.get('from_token') != 'USDC' or t.get('to_token') != token_name:
-                continue
-            
-            # Проверяем наличие данных
-            to_amount = float(t.get('to_amount', 0))
-            from_amount = float(t.get('from_amount', 0))
-            
-            if to_amount <= 0 or from_amount <= 0:
-                continue
-            
-            # Все проверки пройдены
-            buys.append(t)
-        
-        if not buys:
-            return None, None, None
-        
-        # Берём последнюю покупку (первая в списке, т.к. сортировка по убыванию времени)
-        last_buy = buys[0]
-        
-        to_amount = float(last_buy.get('to_amount', 0))
-        from_amount = float(last_buy.get('from_amount', 0))
-        price = from_amount / to_amount
-        
-        # Получаем timestamp
-        timestamp = last_buy.get('timestamp') or last_buy.get('created_at') or datetime.now().isoformat()
-        
-        return price, to_amount, timestamp
-        
-    except Exception as e:
-        client.log_message(
-            f"⚠️ {client.sol_wallet.label}: Failed to get last buy price: {e}",
-            level="WARNING"
-        )
-        return None, None, None
-
-
 async def get_average_buy_price_for_amount(client: 'SpotClient', token_name: str, target_amount: Decimal) -> tuple:
     """
     Получает среднюю цену покупки для заданного объема токенов.
@@ -224,49 +166,6 @@ async def get_average_buy_price_for_amount(client: 'SpotClient', token_name: str
         return None, 0
 
 
-async def place_buy_limit_order(client: 'SpotClient', token_name: str, 
-                                usdc_amount: Decimal, limit_price: Decimal) -> dict:
-    """
-    Создает лимитный ордер на покупку (USDC → Token).
-    
-    Args:
-        client: SpotClient instance
-        token_name: Название токена (например "WBTC")
-        usdc_amount: Количество USDC для покупки
-        limit_price: Лимитная цена (USDC за 1 токен)
-        
-    Returns:
-        dict: Информация о созданном ордере, или None если не удалось разместить
-    """
-    try:
-        limit_order = await client.place_limit_order(
-            from_token="USDC",
-            to_token=token_name,
-            amount=usdc_amount,
-            limit_price=float(limit_price)
-        )
-        
-        if limit_order and limit_order.get('order_id'):
-            client.log_message(
-                f"📋 {client.sol_wallet.label}: Buy Limit placed: ${usdc_amount:.2f} @ ${limit_price:.2f}",
-                level="INFO"
-            )
-            return limit_order
-        else:
-            client.log_message(
-                f"❌ {client.sol_wallet.label}: Failed to place Buy Limit order: API returned None",
-                level="ERROR"
-            )
-            return None
-            
-    except Exception as e:
-        client.log_message(
-            f"❌ {client.sol_wallet.label}: Failed to create Buy Limit order: {e}",
-            level="ERROR"
-        )
-        return None
-
-
 async def create_tp_order(client: 'SpotClient', token_name: str, token_amount: Decimal, 
                           tp_price: Decimal, entry_price: Decimal) -> dict:
     """
@@ -329,174 +228,6 @@ async def create_tp_order(client: 'SpotClient', token_name: str, token_amount: D
             level="ERROR"
         )
         return None
-
-
-async def get_all_limit_orders(client: 'SpotClient', token_name: str) -> tuple:
-    """
-    Получает все лимитные ордера с биржи ОДНИМ запросом.
-    Разделяет их на TP (продажа) и Buy Limit (покупка).
-    
-    Args:
-        client: SpotClient instance
-        token_name: Название токена (например "WBTC")
-        
-    Returns:
-        tuple: (tp_orders: list, buy_limit_orders: list)
-    """
-    tp_orders = []
-    buy_limit_orders = []
-    
-    try:
-        # Получаем открытые лимитные ордера с биржи
-        exchange_orders = await client.browser.get_open_limit_orders()
-        
-        if not exchange_orders:
-            return tp_orders, buy_limit_orders
-        
-        # Получаем адреса токенов
-        from .config import SOL_TOKEN_ADDRESSES
-        input_mint_address = SOL_TOKEN_ADDRESSES.get(token_name)
-        output_mint_address = SOL_TOKEN_ADDRESSES.get("USDC")
-        user_wallet = str(client.sol_wallet.address)
-        
-        # Создаём маппинг адрес → символ
-        address_to_symbol = {v: k for k, v in SOL_TOKEN_ADDRESSES.items()}
-        
-        # Фильтруем ордера
-        for order in exchange_orders:
-            # Проверяем статус (только активные!)
-            order_status = order.get('status')
-            if isinstance(order_status, int):
-                if order_status != 0:
-                    continue
-            elif isinstance(order_status, str):
-                if order_status.lower() not in ['pending', 'open', 'active', '']:
-                    continue
-            
-            # Проверяем принадлежность кошельку
-            order_owner = (
-                order.get('user_wallet_address') or 
-                order.get('owner') or 
-                order.get('user') or
-                order.get('wallet_address')
-            )
-            
-            if order_owner and order_owner != user_wallet:
-                continue
-            
-            # Получаем токены из адресов
-            input_mint = order.get('input_mint')
-            output_mint = order.get('output_mint')
-            from_token = address_to_symbol.get(input_mint)
-            to_token = address_to_symbol.get(output_mint)
-            
-            # Извлекаем данные
-            order_id = order.get('limit_order_account_address') or order.get('order_id')
-            initial_input_amount = order.get('initial_input_amount', 0)
-            expected_output_amount = order.get('expected_output_amount', 0)
-            
-            # Получаем decimals из API или определяем по токену
-            input_decimals = order.get('input_mint_decimals')
-            output_decimals = order.get('output_mint_decimals')
-            
-            # Если API не вернул decimals, определяем по известным токенам
-            if input_decimals is None:
-                token_decimals_map = {
-                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
-                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
-                    "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 8,  # WBTC
-                    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # WETH
-                    "So11111111111111111111111111111111111111112": 9,  # SOL
-                }
-                input_decimals = token_decimals_map.get(input_mint, 9)
-            
-            if output_decimals is None:
-                token_decimals_map = {
-                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
-                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
-                    "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 8,  # WBTC
-                    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # WETH
-                    "So11111111111111111111111111111111111111112": 9,  # SOL
-                }
-                output_decimals = token_decimals_map.get(output_mint, 9)
-            
-            # Количество входного токена
-            input_token_amount = initial_input_amount / (10 ** input_decimals)
-            # Ожидаемое количество выходного токена
-            output_token_amount = expected_output_amount / (10 ** output_decimals)
-            
-            # Timestamp
-            created_at = order.get('created_at', 0)
-            if created_at > 0:
-                timestamp = datetime.fromtimestamp(created_at / 1000).isoformat()
-            else:
-                timestamp = datetime.now().isoformat()
-            
-            # ✅ ПРОДАЖА (TP): Token → USDC
-            if from_token == token_name and to_token == "USDC":
-                # Лимитная цена (USDC за 1 токен)
-                limit_price = output_token_amount / input_token_amount if input_token_amount > 0 else 0
-                
-                tp_orders.append({
-                    'order_id': order_id,
-                    'limit_order_account_address': order_id,
-                    'amount': float(input_token_amount),
-                    'tp_price': float(limit_price),
-                    'entry_price': float(limit_price - settings.STEP),
-                    'timestamp': timestamp
-                })
-            
-            # ✅ ПОКУПКА: USDC → Token
-            elif from_token == "USDC" and to_token == token_name:
-                # Лимитная цена (USDC за 1 токен)
-                limit_price = input_token_amount / output_token_amount if output_token_amount > 0 else 0
-                
-                buy_limit_orders.append({
-                    'order_id': order_id,
-                    'limit_order_account_address': order_id,
-                    'usdc_amount': float(input_token_amount),
-                    'token_amount': float(output_token_amount),
-                    'limit_price': float(limit_price),
-                    'timestamp': timestamp
-                })
-        
-        # Логируем только один раз при старте
-        if not hasattr(client, '_limit_orders_logged'):
-            client._limit_orders_logged = False
-        
-        if not client._limit_orders_logged:
-            if tp_orders:
-                client.log_message(
-                    f"📥 {client.sol_wallet.label}: Loaded {len(tp_orders)} TP orders from exchange",
-                    level="INFO"
-                )
-                for i, tp in enumerate(sorted(tp_orders, key=lambda x: x['tp_price']), 1):
-                    client.log_message(
-                        f"   {i}. {tp['amount']:.6f} {token_name} @ ${tp['tp_price']:.2f} (entry: ${tp.get('entry_price', 0):.2f})",
-                        level="INFO"
-                    )
-            
-            if buy_limit_orders:
-                client.log_message(
-                    f"📥 {client.sol_wallet.label}: Loaded {len(buy_limit_orders)} active Buy Limit order(s)",
-                    level="INFO"
-                )
-                # Выводим детали каждого Buy Limit (USDC сумма и ID)
-                for i, buy in enumerate(buy_limit_orders, 1):
-                    client.log_message(
-                        f"   {i}. ${buy['usdc_amount']:.2f} USDC (ID: {buy['order_id'][:8]}...)",
-                        level="INFO"
-                    )
-            
-            client._limit_orders_logged = True
-            
-    except Exception as e:
-        client.log_message(
-            f"⚠️ {client.sol_wallet.label}: Failed to get limit orders from exchange: {e}",
-            level="WARNING"
-        )
-    
-    return tp_orders, buy_limit_orders
 
 
 async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> list:
@@ -854,177 +585,6 @@ async def send_tg_notification(client: SpotClient, text: str, save_to_report: bo
         client.log_message(f"Failed to send Telegram notification: {e}", level="DEBUG")
 
 
-async def check_and_cleanup_old_buy_limits(client: SpotClient, token_name: str,
-                                           buy_limit_orders: list, min_tp_price: Decimal,
-                                           step: Decimal) -> None:
-    """
-    Проверяет и удаляет устаревшие Buy Limit ордера.
-    
-    Логика:
-    - Актуальный Buy Limit должен быть на (min_tp_price - step * 2)
-    - Если ордер ниже чем (min_tp_price - step * 2.5) → удаляем
-    
-    Args:
-        client: SpotClient instance
-        token_name: Название токена
-        buy_limit_orders: Список активных Buy Limit ордеров
-        min_tp_price: Минимальная цена TP
-        step: Шаг из настроек
-    """
-    try:
-        # Инициализируем кэш пропущенных ордеров (чтобы не логировать постоянно)
-        if not hasattr(client, '_skipped_buy_limit_ids'):
-            client._skipped_buy_limit_ids = set()
-        
-        # Рассчитываем порог устаревания
-        target_buy_price = min_tp_price - step * Decimal('2.5')
-        
-        for buy_order in buy_limit_orders:
-            order_price = Decimal(str(buy_order['limit_price']))
-            order_id = buy_order['order_id']
-            usdc_amount = buy_order.get('usdc_amount', 0)
-            
-            if order_price < target_buy_price:
-                # Ордер устарел! Удаляем
-                
-                # Пытаемся отменить устаревший Buy Limit ордер
-                result = await client.browser.cancel_limit_order(order_id)
-                
-                # Проверяем результат (теперь функция всегда возвращает dict, не выбрасывает исключения)
-                if result and result.get('status') == 404:
-                    # Ордер не найден на сервере (возможно не был зарегистрирован)
-                    # Логируем только ОДИН РАЗ
-                    if order_id not in client._skipped_buy_limit_ids:
-                        client.log_message(
-                            f"ℹ️ {client.sol_wallet.label}: Old Buy Limit ${usdc_amount:.2f} (ID: {order_id[:8]}...) not registered on server (skipped)",
-                            level="INFO"
-                        )
-                        client._skipped_buy_limit_ids.add(order_id)
-                elif result and result.get('error'):
-                    # Другая ошибка - логируем только один раз
-                    if order_id not in client._skipped_buy_limit_ids:
-                        client.log_message(
-                            f"⚠️ {client.sol_wallet.label}: Could not cancel old Buy Limit: {result.get('error')}",
-                            level="WARNING"
-                        )
-                        client._skipped_buy_limit_ids.add(order_id)
-                else:
-                    # Успешно отменили
-                    client.log_message(
-                        f"🗑️ {client.sol_wallet.label}: Cancelled old Buy Limit ${usdc_amount:.2f} (ID: {order_id[:8]}...) "
-                        f"threshold: ${target_buy_price:.2f}",
-                        level="INFO"
-                    )
-                    # Удаляем из кэша если был там
-                    client._skipped_buy_limit_ids.discard(order_id)
-                    
-    except Exception as e:
-        client.log_message(
-            f"❌ {client.sol_wallet.label}: Error in check_and_cleanup_old_buy_limits: {e}",
-            level="ERROR"
-        )
-
-
-async def set_TP_for_new_buy(client: SpotClient, token_name: str, last_buy_price: float, 
-                              step: Decimal, current_price: Decimal) -> float:
-    """
-    Проверяет наличие новой покупки в истории и выставляет TP ордер.
-    
-    Логика:
-    - Получает последнюю покупку из истории
-    - Сравнивает с last_buy_price
-    - Если цена изменилась → новая покупка → выставляем TP
-    
-    Args:
-        client: SpotClient instance
-        token_name: Название токена
-        last_buy_price: Цена последней известной покупки
-        step: Шаг для TP (из настроек)
-        current_price: Текущая рыночная цена (для статистики)
-        
-    Returns:
-        float: Обновленное значение last_buy_price
-    """
-    try:
-        # Получаем последнюю покупку из истории
-        latest_price, latest_amount, latest_timestamp = await get_last_buy_price(client, token_name)
-        
-        if latest_price is None:
-            # Нет покупок в истории
-            return last_buy_price
-        
-        # Проверяем, это новая покупка?
-        # Сравниваем с погрешностью 0.01$ (чтобы избежать флуктуаций округления)
-        if last_buy_price is None or abs(latest_price - last_buy_price) > 0.01:
-            # Это НОВАЯ покупка! Выставляем TP
-            entry_price = Decimal(str(latest_price))
-            token_amount = Decimal(str(latest_amount))
-            tp_price = entry_price + step
-            
-            client.log_message(
-                f"🔍 {client.sol_wallet.label}: New buy detected: {token_amount:.6f} {token_name} @ ${entry_price:.2f}",
-                level="INFO"
-            )
-            
-            # Создаем TP ордер на бирже
-            tp_order = await create_tp_order(
-                client=client,
-                token_name=token_name,
-                token_amount=token_amount,
-                tp_price=tp_price,
-                entry_price=entry_price
-            )
-            
-            if tp_order:
-                # Получаем актуальные балансы
-                usdc_balance = await client.get_usdc_balance()
-                token_balance = await client.get_token_balance(token_name)
-                total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
-                
-                # Логируем TP
-                client.log_message(
-                    f"🎯 {client.sol_wallet.label}: Set TP: {token_amount:.6f} @ ${entry_price:.2f} → ${tp_price:.2f}",
-                    level="INFO"
-                )
-                
-                # Записываем статистику Set TP
-                await log_statistics_to_excel(
-                    client=client,
-                    operation="Set TP",
-                    token_amount=float(token_amount),
-                    price=float(tp_price),
-                    current_market_price=float(current_price),
-                    usdc_balance=float(usdc_balance),
-                    token_balance=float(token_balance),
-                    total_value=total_value
-                )
-                
-                # Отправляем отдельное уведомление в TG
-                await send_tg_notification(
-                    client,
-                    f"🎯 <b>{client.sol_wallet.label}: Set TP</b>\n"
-                    f"{token_amount:.6f} {token_name} @ ${entry_price:.2f} → ${tp_price:.2f}",
-                    save_to_report=False
-                )
-                
-                # Обновляем last_buy_price
-                return latest_price
-            else:
-                client.log_message(
-                    f"⚠️ {client.sol_wallet.label}: Failed to create TP order, will retry",
-                    level="WARNING"
-                )
-        
-        return last_buy_price if last_buy_price is not None else latest_price
-        
-    except Exception as e:
-        client.log_message(
-            f"❌ {client.sol_wallet.label}: Error in set_TP_for_new_buy: {e}",
-            level="ERROR"
-        )
-        return last_buy_price
-
-
 async def calculate_real_profit(client: SpotClient, sold_amount: float, sell_price: float, entry_price: float) -> float:
     """
     Рассчитывает реальную прибыль от сделки
@@ -1090,19 +650,6 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
             level="INFO"
         )
         
-        # Инициализация: получаем цену последней покупки из истории
-        last_buy_price, _, _ = await get_last_buy_price(client, token_name)
-        if last_buy_price:
-            client.log_message(
-                f"📥 {client.sol_wallet.label}: Last buy price from history: ${last_buy_price:.2f}",
-                level="INFO"
-            )
-        else:
-            client.log_message(
-                f"📥 {client.sol_wallet.label}: No previous buy found in history",
-                level="INFO"
-            )
-        
         # Кэш для отслеживания изменений
         previous_state = None
         orphaned_logged = False  # Флаг для однократного вывода orphaned tokens
@@ -1123,8 +670,8 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
                 pass  # Если не удалось импортировать - продолжаем
             
             try:
-                # Получаем все лимитные ордера с биржи ОДНИМ запросом (источник истины!)
-                current_tp_orders, buy_limit_orders = await get_all_limit_orders(client, token_name)
+                # Получаем текущие TP ордера с биржи (источник истины!)
+                current_tp_orders = await get_tp_orders_from_exchange(client, token_name)
                 
                 # Получаем текущую цену
                 current_price = await client.get_current_price(token_name)
@@ -1322,7 +869,7 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
                             token_balance = await client.get_token_balance(token_name)
                             total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
                             
-                            # Записываем статистику First Position
+                            # Записываем статистику First Position СНАЧАЛА
                             await log_statistics_to_excel(
                                 client=client,
                                 operation="First Position",
@@ -1334,12 +881,52 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
                                 total_value=total_value
                             )
                             
-                            # Отправляем уведомление (без TP, он будет выставлен отдельно)
-                            order_value = float(token_amount) * float(actual_price)
+                            # Создаем TP ордер (лимитный на бирже)
+                            tp_price = actual_price + step
+                            tp_order = await create_tp_order(
+                                client=client,
+                                token_name=token_name,
+                                token_amount=token_amount,
+                                tp_price=float(tp_price),
+                                entry_price=float(actual_price)
+                            )
+                            
+                            # Получаем актуальный баланс после создания TP (может измениться из-за комиссий)
+                            usdc_balance = await client.get_usdc_balance()
+                            token_balance = await client.get_token_balance(token_name)
+                            total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
+                            
+                            # Логируем TP
+                            if tp_order:
+                                client.log_message(
+                                    f"{client.sol_wallet.label}: set TP: {token_amount:.5f} @ ${actual_price:.0f} → ${tp_price:.0f}",
+                                    level="INFO"
+                                )
+                                
+                                # Записываем статистику Set TP ПОСЛЕ
+                                await log_statistics_to_excel(
+                                    client=client,
+                                    operation="Set TP",
+                                    token_amount=float(token_amount),
+                                    price=float(tp_price),
+                                    current_market_price=float(current_price),
+                                    usdc_balance=float(usdc_balance),
+                                    token_balance=float(token_balance),
+                                    total_value=total_value
+                                )
+                            else:
+                                if can_log_warning(client.label, "tp_order_failed"):
+                                    client.log_message(
+                                        f"{client.sol_wallet.label}: ⚠️ TP order failed, will retry next iteration",
+                                        level="WARNING"
+                                    )
+                            
+                            # Отправляем уведомление
                             await send_tg_notification(
                                 client,
-                                f"🚀 <b>{client.sol_wallet.label}: First Position - ${order_value:.1f}</b>\n"
-                                f"at {actual_price:.2f} / {token_amount:.6f} {token_name}",
+                                f"🚀 <b>{client.sol_wallet.label}: First Position</b>\n"
+                                f"BUY {token_amount:.6f}{token_name} @ ${actual_price:.2f}\n"
+                                f"🎯 TP: ${tp_price:.2f}",
                                 save_to_report=False
                             )
                             
@@ -1347,131 +934,116 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
                         client.log_message(f"{client.sol_wallet.label}: Failed to create first position: {e}", level="ERROR")
                 
                 # 3. Усреднение (если цена упала) - ОТДЕЛЬНАЯ проверка!
-                if min_tp_price:
-                    if settings.USE_LIMIT_FOR_AVERAGING:
-                        # --- Усреднение лимитными ордерами ---
-                        # Рассчитываем целевую цену для Buy Limit
-                        target_buy_price = min_tp_price - step * 2
-                        
-                        if not buy_limit_orders:
-                            # Нет активного Buy Limit → создаём
-                            # Проверка: торговля включена?
-                            if not trading_enabled:
-                                await async_sleep(10)
-                                continue
-                            
-                            # Проверяем достаточность средств
-                            if usdc_balance < position_size:
-                                if can_log_warning(client.label, "insufficient_balance_buy_limit"):
-                                    client.log_message(
-                                        f"⚠️ {client.sol_wallet.label}: Insufficient USDC for Buy Limit: ${usdc_balance:.2f} < ${position_size:.2f}",
-                                        level="WARNING"
-                                    )
-                                await async_sleep(10)
-                                continue
-                            
-                            try:
-                                # Создаём Buy Limit ордер
-                                buy_limit = await place_buy_limit_order(
-                                    client=client,
-                                    token_name=token_name,
-                                    usdc_amount=position_size,
-                                    limit_price=target_buy_price
-                                )
-                                
-                                if buy_limit:
-                                    # Отправляем уведомление
-                                    await send_tg_notification(
-                                        client,
-                                        f"📋 <b>{client.sol_wallet.label}: Buy Limit set - ${position_size:.1f}</b>\n"
-                                        f"at {target_buy_price:.2f}",
-                                        save_to_report=False
-                                    )
-                                    
-                            except Exception as e:
-                                client.log_message(f"{client.sol_wallet.label}: Failed to create Buy Limit: {e}", level="ERROR")
-                        
-                        else:
-                            # Есть Buy Limit → проверяем актуальность
-                            await check_and_cleanup_old_buy_limits(
-                                client=client,
-                                token_name=token_name,
-                                buy_limit_orders=buy_limit_orders,
-                                min_tp_price=min_tp_price,
-                                step=step
-                            )
+                if min_tp_price and current_price < (min_tp_price - step * 2):
+                    trigger_level = min_tp_price - step * 2
                     
-                    elif current_price < (min_tp_price - step * 2):
-                        # --- Усреднение маркет ордером (старая логика) ---
-                        trigger_level = min_tp_price - step * 2
-                        
-                        # Проверка: торговля включена?
-                        if not trading_enabled:
-                            await async_sleep(10)
-                            continue
-                        
-                        client.log_message(
-                            f"💸 {client.sol_wallet.label}: Averaging: ${current_price:.0f} < ${min_tp_price:.0f} - ${step:.0f}×2 = ${trigger_level:.0f}",
-                            level="INFO"
+                    # Проверка: торговля включена?
+                    if not trading_enabled:
+                        await async_sleep(10)
+                        continue
+                    
+                    client.log_message(
+                        f"💸 {client.sol_wallet.label}: Averaging: ${current_price:.0f} < ${min_tp_price:.0f} - ${step:.0f}×2 = ${trigger_level:.0f}",
+                        level="INFO"
+                    )
+                    
+                    # Проверяем достаточность средств
+                    if usdc_balance < position_size:
+                        if can_log_warning(client.label, "insufficient_balance_averaging"):
+                            client.log_message(
+                                f"⚠️ {client.sol_wallet.label}: Insufficient USDC for averaging: ${usdc_balance:.2f} < ${position_size:.2f}",
+                                level="WARNING"
+                            )
+                        await async_sleep(10)
+                        continue
+                    
+                    try:
+                        # Выполняем покупку
+                        buy_result = await client.place_market_order(
+                            from_token="USDC",
+                            to_token=token_name,
+                            amount=position_size
                         )
                         
-                        # Проверяем достаточность средств
-                        if usdc_balance < position_size:
-                            if can_log_warning(client.label, "insufficient_balance_averaging"):
-                                client.log_message(
-                                    f"⚠️ {client.sol_wallet.label}: Insufficient USDC for averaging: ${usdc_balance:.2f} < ${position_size:.2f}",
-                                    level="WARNING"
-                                )
-                            await async_sleep(10)
-                            continue
-                        
-                        try:
-                            # Выполняем покупку
-                            buy_result = await client.place_market_order(
-                                from_token="USDC",
-                                to_token=token_name,
-                                amount=position_size
+                        if buy_result:
+                            actual_price = Decimal(str(buy_result['price']))
+                            token_amount = Decimal(str(buy_result['to_amount']))
+                            usdc_spent = float(buy_result['from_amount'])
+                            
+                            # Логируем покупку
+                            client.log_message(
+                                f"Open long market order {token_amount:.5f} {token_name} at {actual_price:.0f} ({usdc_spent:.2f}$)",
+                                level="INFO"
                             )
                             
-                            if buy_result:
-                                actual_price = Decimal(str(buy_result['price']))
-                                token_amount = Decimal(str(buy_result['to_amount']))
-                                usdc_spent = float(buy_result['from_amount'])
-                                
-                                # Логируем покупку
+                            # Получаем актуальный баланс после покупки
+                            usdc_balance = await client.get_usdc_balance()
+                            token_balance = await client.get_token_balance(token_name)
+                            total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
+                            
+                            # Записываем статистику Averaging СНАЧАЛА
+                            await log_statistics_to_excel(
+                                client=client,
+                                operation="Averaging",
+                                token_amount=float(token_amount),
+                                price=float(actual_price),
+                                current_market_price=float(current_price),
+                                usdc_balance=float(usdc_balance),
+                                token_balance=float(token_balance),
+                                total_value=total_value
+                            )
+                            
+                            # Создаем TP ордер (лимитный на бирже)
+                            tp_price = actual_price + step
+                            tp_order = await create_tp_order(
+                                client=client,
+                                token_name=token_name,
+                                token_amount=token_amount,
+                                tp_price=tp_price,
+                                entry_price=actual_price
+                            )
+                            
+                            # Получаем актуальный баланс после создания TP
+                            usdc_balance = await client.get_usdc_balance()
+                            token_balance = await client.get_token_balance(token_name)
+                            total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
+                            
+                            # Логируем TP
+                            if tp_order:
                                 client.log_message(
-                                    f"Open long market order {token_amount:.5f} {token_name} at {actual_price:.0f} ({usdc_spent:.2f}$)",
+                                    f"{client.sol_wallet.label}: set TP: {token_amount:.5f} @ ${actual_price:.0f} → ${tp_price:.0f}",
                                     level="INFO"
                                 )
                                 
-                                # Получаем актуальный баланс после покупки
-                                usdc_balance = await client.get_usdc_balance()
-                                token_balance = await client.get_token_balance(token_name)
-                                total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
-                                
-                                # Записываем статистику Averaging
+                                # Записываем статистику Set TP ПОСЛЕ
                                 await log_statistics_to_excel(
                                     client=client,
-                                    operation="Averaging",
+                                    operation="Set TP",
                                     token_amount=float(token_amount),
-                                    price=float(actual_price),
+                                    price=float(tp_price),
                                     current_market_price=float(current_price),
                                     usdc_balance=float(usdc_balance),
                                     token_balance=float(token_balance),
                                     total_value=total_value
                                 )
-                                
-                                # Отправляем уведомление (без TP, он будет выставлен отдельно)
-                                order_value = float(token_amount) * float(actual_price)
-                                await send_tg_notification(
-                                    client,
-                                    f"📉 <b>{client.sol_wallet.label}: Averaging - ${order_value:.1f}</b>\n"
-                                    f"at {actual_price:.2f} / {token_amount:.6f} {token_name}",
-                                    save_to_report=False
-                                )
-                                
-                        except Exception as e:
-                            client.log_message(f"{client.sol_wallet.label}: Failed to execute averaging: {e}", level="ERROR")
+                            else:
+                                if can_log_warning(client.label, "tp_order_failed_averaging"):
+                                    client.log_message(
+                                        f"{client.sol_wallet.label}: ⚠️ TP order failed for averaging",
+                                        level="WARNING"
+                                    )
+                            
+                            # Отправляем уведомление
+                            await send_tg_notification(
+                                client,
+                                f"📉 <b>{client.sol_wallet.label}: Averaging</b>\n"
+                                f"BUY {token_amount:.6f}{token_name} @ ${actual_price:.2f}\n"
+                                f"🎯 TP: ${tp_price:.2f}",
+                                save_to_report=False
+                            )
+                            
+                    except Exception as e:
+                        client.log_message(f"{client.sol_wallet.label}: Failed to execute averaging: {e}", level="ERROR")
                 
                 # 4. Пирамидинг (если цена растет) - ОТДЕЛЬНАЯ проверка!
                 if max_tp_price and current_price > (max_tp_price - pwr):
@@ -1521,7 +1093,7 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
                             token_balance = await client.get_token_balance(token_name)
                             total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
                             
-                            # Записываем статистику Pyramiding
+                            # Записываем статистику Pyramiding СНАЧАЛА
                             await log_statistics_to_excel(
                                 client=client,
                                 operation="Pyramiding",
@@ -1533,28 +1105,57 @@ async def trade_averaging_strategy(client: SpotClient, token_name: str):
                                 total_value=total_value
                             )
                             
-                            # Отправляем уведомление (без TP, он будет выставлен отдельно)
-                            order_value = float(token_amount) * float(actual_price)
+                            # Создаем TP ордер (лимитный на бирже)
+                            tp_price = actual_price + step
+                            tp_order = await create_tp_order(
+                                client=client,
+                                token_name=token_name,
+                                token_amount=token_amount,
+                                tp_price=tp_price,
+                                entry_price=actual_price
+                            )
+                            
+                            # Получаем актуальный баланс после создания TP
+                            usdc_balance = await client.get_usdc_balance()
+                            token_balance = await client.get_token_balance(token_name)
+                            total_value = float(usdc_balance) + (float(token_balance) * float(current_price))
+                            
+                            # Логируем TP
+                            if tp_order:
+                                client.log_message(
+                                    f"{client.sol_wallet.label}: set TP: {token_amount:.5f} @ ${actual_price:.0f} → ${tp_price:.0f}",
+                                    level="INFO"
+                                )
+                                
+                                # Записываем статистику Set TP ПОСЛЕ
+                                await log_statistics_to_excel(
+                                    client=client,
+                                    operation="Set TP",
+                                    token_amount=float(token_amount),
+                                    price=float(tp_price),
+                                    current_market_price=float(current_price),
+                                    usdc_balance=float(usdc_balance),
+                                    token_balance=float(token_balance),
+                                    total_value=total_value
+                                )
+                            else:
+                                if can_log_warning(client.label, "tp_order_failed_pyramiding"):
+                                    client.log_message(
+                                        f"{client.sol_wallet.label}: ⚠️ TP order failed for pyramiding",
+                                        level="WARNING"
+                                    )
+                            
+                            # Отправляем уведомление
                             await send_tg_notification(
                                 client,
-                                f"📈 <b>{client.sol_wallet.label}: Pyramiding - ${order_value:.1f}</b>\n"
-                                f"at {actual_price:.2f} / {token_amount:.6f} {token_name}",
+                                f"📈 <b>{client.sol_wallet.label}: Pyramiding</b>\n"
+                                f"BUY {token_amount:.6f}{token_name} @ ${actual_price:.2f}\n"
+                                f"🎯 TP: ${tp_price:.2f}",
                                 save_to_report=False
                             )
                             
                     except Exception as e:
                         client.log_message(f"{client.sol_wallet.label}: Failed to execute pyramiding: {e}", level="ERROR")
-                
-                # 5. Модуль set_TP - проверка новых покупок и выставление TP
-                # Этот модуль работает независимо от блоков покупки
-                # Он проверяет историю сделок и выставляет TP для любых новых покупок
-                last_buy_price = await set_TP_for_new_buy(
-                    client=client,
-                    token_name=token_name,
-                    last_buy_price=last_buy_price,
-                    step=step,
-                    current_price=current_price
-                )
                 
                 # Heartbeat - признаки жизни (раз в 10 минут)
                 import time

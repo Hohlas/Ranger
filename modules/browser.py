@@ -226,52 +226,29 @@ class Browser:
             logger.debug(f'Failed to get open limit orders: {e}')
             return []  # Возвращаем пустой список если endpoint не найден
 
+    @async_retry(source="Browser")
     async def cancel_limit_order(self, order_id: str):
         """
         Отменяет лимитный ордер
         
         Args:
             order_id: ID ордера для отмены (limit_order_account_address)
-            
-        Returns:
-            dict: Результат отмены или информация об ошибке
         """
         try:
-            # Используем session.request напрямую, чтобы избежать автоматической декодировки JSON в send_request
-            r = await self.session.request(
+            r = await self.send_request(
                 method="POST",
                 url="https://prod-spot-api-437363704888.asia-northeast1.run.app/api/v1/orders/limit/cancel",
                 json={
                     "limit_order_account_address": order_id,
                     "user_wallet_address": str(self.sol_address)
-                },
-                proxy=self.proxy if self.proxy else None
+                }
             )
-            
-            # Проверка статуса перед декодированием JSON
-            if r.status == 404:
-                return {"error": "Order not found", "status": 404}
-            
-            # Читаем текст ответа и пробуем распарсить как JSON
-            try:
-                text = await r.text()
-                # Проверяем, это JSON или HTML
-                if text.strip().startswith('<'):
-                    # Это HTML - API вернул HTML вместо JSON
-                    return {"error": "Invalid response format (HTML)", "status": r.status}
-                
-                # Пробуем распарсить как JSON
-                import json
-                response = json.loads(text)
-                return response
-                
-            except Exception:
-                # Не смогли распарсить
-                return {"error": "Invalid response format", "status": r.status}
+            response = await r.json()
+            return response
             
         except Exception as e:
-            # Критическая ошибка (сеть, таймаут и т.д.)
-            return {"error": str(e), "status": "unknown"}
+            logger.error(f'Failed to cancel limit order: {e}')
+            raise
 
 
     @async_retry(source="Browser")
@@ -689,14 +666,6 @@ class Browser:
         parsed_trades = []
         
         for order in orders:
-            # ВАЖНО: Фильтруем только ИСПОЛНЕННЫЕ ордера (status == 1)
-            # Неисполненные ордера (status == 0) содержат некорректные данные в expected_output_amount!
-            order_status = order.get("status")
-            if isinstance(order_status, int) and order_status != 1:
-                continue  # Пропускаем pending/cancelled ордера
-            elif isinstance(order_status, str) and order_status.lower() not in ["filled", "executed", "complete"]:
-                continue  # Пропускаем не-filled ордера
-            
             # Получаем адреса токенов
             input_token_mint = order.get("input_mint")
             output_token_mint = order.get("output_mint")
@@ -717,31 +686,8 @@ class Browser:
                     continue
             
             # Парсим количества (используем initial_input_amount и expected_output_amount)
-            # Получаем decimals из API или определяем по токену
-            input_decimals = order.get("input_mint_decimals")
-            output_decimals = order.get("output_mint_decimals")
-            
-            # Если API не вернул decimals, определяем по известным токенам
-            if input_decimals is None:
-                # Определяем decimals по адресу токена
-                token_decimals_map = {
-                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
-                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
-                    "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 8,  # WBTC
-                    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # WETH
-                    "So11111111111111111111111111111111111111112": 9,  # SOL
-                }
-                input_decimals = token_decimals_map.get(input_token_mint, 9)  # Default = 9 (SOL)
-            
-            if output_decimals is None:
-                token_decimals_map = {
-                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,  # USDC
-                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6,  # USDT
-                    "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 8,  # WBTC
-                    "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 8,  # WETH
-                    "So11111111111111111111111111111111111111112": 9,  # SOL
-                }
-                output_decimals = token_decimals_map.get(output_token_mint, 9)  # Default = 9 (SOL)
+            input_decimals = order.get("input_mint_decimals", 8)
+            output_decimals = order.get("output_mint_decimals", 6)
             
             from_amount = float(order.get("initial_input_amount", 0)) / (10 ** input_decimals)
             to_amount = float(order.get("expected_output_amount", 0)) / (10 ** output_decimals)
