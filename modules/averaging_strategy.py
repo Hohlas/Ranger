@@ -483,7 +483,7 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
         if not hasattr(client, '_tp_orders_rpc_verified'):
             client._tp_orders_rpc_verified = False
         
-        if not client._tp_orders_rpc_verified and tp_orders and not client._tp_orders_logged:
+        if not client._tp_orders_rpc_verified and tp_orders:
             client.log_message(
                 f"🔍 {client.sol_wallet.label}: Verifying {len(tp_orders)} orders on Solana blockchain...",
                 level="INFO"
