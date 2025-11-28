@@ -269,11 +269,8 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
         filtered_by_status = 0
         filtered_by_tokens = 0
         filtered_by_wallet = 0
-        filtered_by_age = 0
-        
-        # Текущее время для проверки возраста ордеров
-        import time
-        current_time = time.time()
+        seen_order_ids = set()  # Для проверки на дубликаты
+        duplicates_found = 0
         
         # Фильтруем только наши ордера (token -> USDC от нашего кошелька)
         for order in exchange_orders:
@@ -327,15 +324,11 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                 # Извлекаем данные
                 order_id = order.get('limit_order_account_address') or order.get('order_id')
                 
-                # Проверяем возраст ордера - фильтруем старые "фантомные" ордера
-                # API может хранить старые ордера со status=0, которые уже не существуют на блокчейне
-                created_at = order.get('created_at', 0)
-                if created_at > 0:
-                    order_age_seconds = current_time - (created_at / 1000)  # created_at в миллисекундах
-                    # Пропускаем ордера старше 7 дней (возможно "фантомные")
-                    if order_age_seconds > 604800:  # 7 дней = 604800 секунд
-                        filtered_by_age += 1
-                        continue
+                # Проверяем на дубликаты order_id
+                if order_id in seen_order_ids:
+                    duplicates_found += 1
+                    continue
+                seen_order_ids.add(order_id)
                 
                 # Рассчитываем параметры из API ответа
                 initial_input_amount = order.get('initial_input_amount', 0)
@@ -391,9 +384,21 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                 level="INFO"
             )
             client.log_message(
-                f"   🔻 Filtered out: {filtered_by_status} by status, {filtered_by_tokens} by tokens, {filtered_by_wallet} by wallet, {filtered_by_age} by age (>7 days)",
+                f"   🔻 Filtered out: {filtered_by_status} by status, {filtered_by_tokens} by tokens, {filtered_by_wallet} by wallet, {duplicates_found} duplicates",
                 level="INFO"
             )
+            
+            # Если количество не совпадает с ожидаемым, выводим детали первых 5 ордеров
+            if len(tp_orders) != len(exchange_orders) - filtered_by_status - filtered_by_tokens - filtered_by_wallet - duplicates_found:
+                client.log_message(
+                    f"   ⚠️ Mismatch detected! Showing first 5 filtered orders for debugging:",
+                    level="INFO"
+                )
+                for i, tp in enumerate(tp_orders[:5], 1):
+                    client.log_message(
+                        f"      {i}. ID: {tp['order_id'][:16]}... | Amount: {tp['amount']:.6f} | Price: ${tp['tp_price']:.2f}",
+                        level="INFO"
+                    )
             
             client.log_message(
                 f"✅ {client.sol_wallet.label}: Filtered to {len(tp_orders)} active TP orders",

@@ -1,5 +1,5 @@
 
-VERSION             = "2.33.0-limit-orders-fix"  # Версия для отслеживания обновлений
+VERSION             = "2.33.2-duplicates-check"  # Версия для отслеживания обновлений
 
 # --- AVERAGING/PYRAMIDING STRATEGY SETTINGS ---
 # Параметры стратегии "Усреднение/Пирамидинг" для Spot торговли
