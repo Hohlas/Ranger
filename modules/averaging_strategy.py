@@ -272,6 +272,9 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
         seen_order_ids = set()  # Для проверки на дубликаты
         duplicates_found = 0
         
+        # Сохраняем первые 3 ордера со status=0 для анализа
+        status_0_samples = []
+        
         # Фильтруем только наши ордера (token -> USDC от нашего кошелька)
         for order in exchange_orders:
             input_mint = order.get('input_mint')
@@ -284,6 +287,10 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
             # Подсчитываем статусы для диагностики
             status_key = f"status_{order_status}" if order_status is not None else "status_None"
             status_counts[status_key] = status_counts.get(status_key, 0) + 1
+            
+            # Сохраняем первые 3 ордера со status=0 для детального анализа
+            if order_status == 0 and len(status_0_samples) < 3:
+                status_0_samples.append(order)
             
             if isinstance(order_status, int):
                 # Числовые статусы (из API):
@@ -388,17 +395,31 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                 level="INFO"
             )
             
-            # Если количество не совпадает с ожидаемым, выводим детали первых 5 ордеров
-            if len(tp_orders) != len(exchange_orders) - filtered_by_status - filtered_by_tokens - filtered_by_wallet - duplicates_found:
+            # Выводим детали первых 3 ордеров со status=0 из API
+            client.log_message(
+                f"   🔬 API RAW DATA - First 3 orders with status=0:",
+                level="INFO"
+            )
+            import json
+            for i, raw_order in enumerate(status_0_samples, 1):
+                # Форматируем JSON для читаемости, убираем лишние поля
+                relevant_fields = {
+                    'order_id': raw_order.get('limit_order_account_address', raw_order.get('order_id', 'N/A'))[:20],
+                    'status': raw_order.get('status'),
+                    'created_at': raw_order.get('created_at'),
+                    'last_updated': raw_order.get('last_updated_timestamp'),
+                    'input_mint': raw_order.get('input_mint', '')[:10],
+                    'output_mint': raw_order.get('output_mint', '')[:10],
+                    'initial_input_amount': raw_order.get('initial_input_amount'),
+                    'expected_output_amount': raw_order.get('expected_output_amount'),
+                    'filled_input_amount': raw_order.get('filled_input_amount'),
+                    'filled_output_amount': raw_order.get('filled_output_amount'),
+                    'user_wallet': raw_order.get('user_wallet_address', raw_order.get('owner', ''))[:10]
+                }
                 client.log_message(
-                    f"   ⚠️ Mismatch detected! Showing first 5 filtered orders for debugging:",
+                    f"      Order {i}: {json.dumps(relevant_fields, indent=2)}",
                     level="INFO"
                 )
-                for i, tp in enumerate(tp_orders[:5], 1):
-                    client.log_message(
-                        f"      {i}. ID: {tp['order_id'][:16]}... | Amount: {tp['amount']:.6f} | Price: ${tp['tp_price']:.2f}",
-                        level="INFO"
-                    )
             
             client.log_message(
                 f"✅ {client.sol_wallet.label}: Filtered to {len(tp_orders)} active TP orders",
