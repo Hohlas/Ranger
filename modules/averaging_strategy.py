@@ -421,74 +421,16 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                     'timestamp': timestamp
                 })
                 
-        # Логируем только один раз при старте (с диагностикой - ДО RPC-проверки)
+        # Логируем только один раз при старте (краткая информация)
         if not hasattr(client, '_tp_orders_logged'):
             client._tp_orders_logged = False
-        
-        if not client._tp_orders_logged:
-            client.log_message(
-                f"🔍 {client.sol_wallet.label}: Received {len(exchange_orders)} orders from API (before filtering)",
-                level="INFO"
-            )
-            
-            # Диагностика фильтрации
-            client.log_message(
-                f"   📊 Status distribution: {', '.join([f'{k}={v}' for k, v in sorted(status_counts.items())])}",
-                level="INFO"
-            )
-            client.log_message(
-                f"   🔻 Filtered out: {filtered_by_status} by status, {filtered_by_tokens} by tokens, {filtered_by_wallet} by wallet, {duplicates_found} duplicates",
-                level="INFO"
-            )
-            
-            # Выводим детали ВСЕХ ордеров со status=0 из API (компактный формат)
-            client.log_message(
-                f"   🔬 API RAW DATA - ALL {len(status_0_samples)} orders with status=0:",
-                level="INFO"
-            )
-            for i, raw_order in enumerate(status_0_samples, 1):
-                order_id_short = raw_order.get('limit_order_account_address', raw_order.get('order_id', 'N/A'))[:12]
-                initial = raw_order.get('initial_input_amount', 0)
-                expected = raw_order.get('expected_output_amount', 0)
-                filled_out = raw_order.get('filled_output_amount', 0)
-                filled_in = raw_order.get('filled_input_amount', 0)
-                
-                # Рассчитываем цену
-                price = (expected / 10**6) / (initial / 10**8) if initial > 0 else 0
-                
-                # Помечаем исполненные
-                filled_mark = " ❌FILLED" if filled_out and filled_out > 0 else " ✅ACTIVE"
-                
-                client.log_message(
-                    f"      {i:2d}. ID:{order_id_short}... | Price:${price:>8.2f} | In:{initial:>6d} Out:{expected:>8d} | FilledOut:{filled_out}{filled_mark}",
-                    level="INFO"
-                )
-            
-            client.log_message(
-                f"✅ {client.sol_wallet.label}: Filtered to {len(tp_orders)} active TP orders",
-                level="INFO"
-            )
-            
-            if tp_orders:
-                # Выводим список всех TP ордеров при старте
-                for i, tp in enumerate(sorted(tp_orders, key=lambda x: x['tp_price']), 1):
-                    client.log_message(
-                        f"   {i}. {tp['amount']:.6f} {token_name} @ ${tp['tp_price']:.2f} (entry: ${tp.get('entry_price', 0):.2f})",
-                        level="INFO"
-                    )
-            
-            client._tp_orders_logged = True
         
         # ✅ RPC-ПРОВЕРКА: Проверяем существование ордеров на блокчейне (только при старте)
         if not hasattr(client, '_tp_orders_rpc_verified'):
             client._tp_orders_rpc_verified = False
         
         if not client._tp_orders_rpc_verified and tp_orders:
-            client.log_message(
-                f"🔍 {client.sol_wallet.label}: Verifying {len(tp_orders)} orders on Solana blockchain...",
-                level="INFO"
-            )
-            
+            # RPC-проверка: проверяем существование ордеров на блокчейне
             verified_orders = []
             phantom_count = 0
             
@@ -500,35 +442,21 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                     verified_orders.append(order)
                 else:
                     phantom_count += 1
-                    client.log_message(
-                        f"   👻 Phantom order detected: {order_id[:16]}... @ ${order['tp_price']:.2f}",
-                        level="INFO"
-                    )
             
             tp_orders = verified_orders
             
-            if phantom_count > 0:
+            # Логируем только если нашли фантомы или при первом запуске
+            if not client._tp_orders_logged:
                 client.log_message(
-                    f"   ⚠️ Filtered out {phantom_count} phantom orders. Real orders: {len(tp_orders)}",
+                    f"📥 {client.sol_wallet.label}: Loaded {len(tp_orders)} TP orders from exchange",
                     level="INFO"
                 )
-            else:
-                client.log_message(
-                    f"   ✅ All {len(tp_orders)} orders verified on blockchain!",
-                    level="INFO"
-                )
-            
-            # Выводим финальный список после RPC-проверки
-            if tp_orders:
-                client.log_message(
-                    f"   📋 Final verified orders:",
-                    level="INFO"
-                )
-                for i, tp in enumerate(sorted(tp_orders, key=lambda x: x['tp_price']), 1):
+                if phantom_count > 0:
                     client.log_message(
-                        f"      {i:2d}. {tp['amount']:.6f} {token_name} @ ${tp['tp_price']:.2f}",
+                        f"   👻 Filtered out {phantom_count} phantom orders via RPC verification",
                         level="INFO"
                     )
+                client._tp_orders_logged = True
             
             client._tp_orders_rpc_verified = True
             

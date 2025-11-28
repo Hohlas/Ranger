@@ -1,5 +1,5 @@
 
-VERSION             = "2.35.2-rpc-actually-works"  # Версия для отслеживания обновлений
+VERSION             = "2.36.0-clean-logs"  # Версия для отслеживания обновлений
 
 # --- AVERAGING/PYRAMIDING STRATEGY SETTINGS ---
 # Параметры стратегии "Усреднение/Пирамидинг" для Spot торговли
