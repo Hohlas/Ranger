@@ -217,11 +217,9 @@ class Browser:
             response = await r.json()
             
             if isinstance(response, list):
-                logger.debug(f'API returned {len(response)} limit orders')
                 return response
             elif response.get('orders'):
                 orders = response['orders']
-                logger.debug(f'API returned {len(orders)} limit orders')
                 return orders
             else:
                 return []
