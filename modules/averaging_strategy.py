@@ -339,22 +339,29 @@ async def get_tp_orders_from_exchange(client: 'SpotClient', token_name: str) -> 
                     'timestamp': timestamp
                 })
                 
-        # Логируем только один раз при старте
+        # Логируем только один раз при старте (с диагностикой)
         if not hasattr(client, '_tp_orders_logged'):
             client._tp_orders_logged = False
         
-        if not client._tp_orders_logged and tp_orders:
+        if not client._tp_orders_logged:
             client.log_message(
-                f"📥 {client.sol_wallet.label}: Loaded {len(tp_orders)} TP orders from exchange",
+                f"🔍 {client.sol_wallet.label}: Received {len(exchange_orders)} orders from API (before filtering)",
                 level="INFO"
             )
             
-            # Выводим список всех TP ордеров при старте
-            for i, tp in enumerate(sorted(tp_orders, key=lambda x: x['tp_price']), 1):
-                client.log_message(
-                    f"   {i}. {tp['amount']:.6f} {token_name} @ ${tp['tp_price']:.2f} (entry: ${tp.get('entry_price', 0):.2f})",
-                    level="INFO"
-                )
+            client.log_message(
+                f"✅ {client.sol_wallet.label}: Filtered to {len(tp_orders)} active TP orders",
+                level="INFO"
+            )
+            
+            if tp_orders:
+                # Выводим список всех TP ордеров при старте
+                for i, tp in enumerate(sorted(tp_orders, key=lambda x: x['tp_price']), 1):
+                    client.log_message(
+                        f"   {i}. {tp['amount']:.6f} {token_name} @ ${tp['tp_price']:.2f} (entry: ${tp.get('entry_price', 0):.2f})",
+                        level="INFO"
+                    )
+            
             client._tp_orders_logged = True
             
     except Exception as e:

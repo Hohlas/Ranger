@@ -210,15 +210,19 @@ class Browser:
                 method="GET",
                 url="https://prod-spot-api-437363704888.asia-northeast1.run.app/api/v1/orders/limit",
                 params={
-                    "user_wallet_address": str(self.sol_address)
+                    "user_wallet_address": str(self.sol_address),
+                    "limit": 100  # Запрашиваем до 100 ордеров
                 }
             )
             response = await r.json()
             
             if isinstance(response, list):
+                logger.debug(f'API returned {len(response)} limit orders')
                 return response
             elif response.get('orders'):
-                return response['orders']
+                orders = response['orders']
+                logger.debug(f'API returned {len(orders)} limit orders')
+                return orders
             else:
                 return []
                 
